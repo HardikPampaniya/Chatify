@@ -35,6 +35,7 @@ const getMessages = async (req, res) => {
 const createTextMessage = async (req, res) => {
     const conversationId = req.params.conversationId;
     const text = String(req.body.text || "").trim();
+    const clientMessageId = String(req.body?.clientMessageId || "").trim().slice(0, 100);
 
     if (!mongoose.isValidObjectId(conversationId)) {
         return res.status(400).json({ message: "Invalid conversation ID" });
@@ -49,6 +50,19 @@ const createTextMessage = async (req, res) => {
         return res.status(403).json({ message: "Access denied" });
     }
 
+    if (clientMessageId) {
+        const existing = await Message.findOne({
+            conversation: conversation._id,
+            sender: req.user._id,
+            clientMessageId
+        });
+        if (existing) {
+            await existing.populate("sender", "username");
+            await existing.populate("receiver", "username");
+            return res.json({ message: existing });
+        }
+    }
+
     const receiver = conversation.participants.find(
         id => id.toString() !== req.user._id.toString()
     );
@@ -61,12 +75,25 @@ const createTextMessage = async (req, res) => {
             sender: req.user._id,
             receiver,
             type: "text",
-            text
+            text,
+            clientMessageId: clientMessageId || undefined
         });
 
         conversation.lastMessage = message._id;
         await conversation.save();
     } catch (error) {
+        if (error.code === 11000 && clientMessageId) {
+            const existing = await Message.findOne({
+                conversation: conversation._id,
+                sender: req.user._id,
+                clientMessageId
+            });
+            if (existing) {
+                await existing.populate("sender", "username");
+                await existing.populate("receiver", "username");
+                return res.json({ message: existing });
+            }
+        }
         if (message?._id) {
             await Message.deleteOne({ _id: message._id }).catch(() => {});
             conversation.lastMessage = previousLastMessage;

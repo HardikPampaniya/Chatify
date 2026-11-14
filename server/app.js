@@ -39,7 +39,7 @@ app.use(cookieParser());
 
 app.use(rateLimit({
     windowMs: 15 * 60 * 1000,
-    limit: 300,
+    limit: 600,
     standardHeaders: true,
     legacyHeaders: false
 }));

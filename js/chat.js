@@ -108,7 +108,7 @@ const updateChatStatus = () => {
 const updateConversationControls = () => {
     const enabled = Boolean(state.conversation);
     messageInput.disabled = !enabled;
-    sendBtn.disabled = !enabled || !state.socket?.connected;
+    sendBtn.disabled = !enabled;
     attachBtn.disabled = !enabled;
     byId("voiceCallBtn").disabled = !enabled || !state.socket?.connected || Boolean(state.call);
     byId("videoCallBtn").disabled = !enabled || !state.socket?.connected || Boolean(state.call);
@@ -331,6 +331,35 @@ const loadMessages = async expectedConversationId => {
     const data = await api(`/api/messages/${encodeURIComponent(expectedConversationId)}`);
     if (conversationId() !== expectedConversationId) return;
     renderMessages(data.messages || []);
+};
+
+const refreshMessages = async expectedConversationId => {
+    const data = await api(`/api/messages/${encodeURIComponent(expectedConversationId)}`);
+    if (conversationId() !== expectedConversationId) return;
+    const list = data.messages || [];
+    const visibleIds = new Set(list.map(message => getId(message._id)));
+    const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 180;
+
+    [...messages.querySelectorAll(".message-row")].forEach(row => {
+        if (!row.dataset.messageId.startsWith("pending:") && !visibleIds.has(row.dataset.messageId)) {
+            state.renderedMessageIds.delete(row.dataset.messageId);
+            row.remove();
+        }
+    });
+    list.forEach(message => {
+        const id = getId(message._id);
+        if (message.type === "deleted" || message.deletedForEveryone) {
+            markMessageDeletedForEveryone({ messageId: id, conversationId: expectedConversationId });
+        } else if (!findMessageRow(id)) {
+            renderMessage(message);
+        }
+    });
+
+    if (!messages.querySelector(".message-row")) {
+        clearMessages("No messages yet", "Send a message, share a file or start a call.");
+    } else if (nearBottom) {
+        messages.scrollTop = messages.scrollHeight;
+    }
 };
 
 const makePersonRow = (user, subtitle, actions = [], variant = "") => {
@@ -816,7 +845,8 @@ const refreshLiveState = async () => {
         await Promise.all([
             loadFriendRequests(),
             loadConversations(),
-            byId("userSearch").value.trim().length >= 2 ? searchUsers() : Promise.resolve()
+            byId("userSearch").value.trim().length >= 2 ? searchUsers() : Promise.resolve(),
+            state.conversation ? refreshMessages(conversationId()) : Promise.resolve()
         ]);
     } catch {
         // Keep the current view; the next timer or socket event will retry.
@@ -827,7 +857,7 @@ const refreshLiveState = async () => {
 
 const sendMessage = () => {
     const text = messageInput.value.trim();
-    if (!conversationId() || !text || !state.socket?.connected || sendBtn.disabled) return;
+    if (!conversationId() || !text || sendBtn.disabled) return;
     const activeConversationId = conversationId();
     const key = pendingKey(activeConversationId, text);
     const payload = {
@@ -849,24 +879,45 @@ const sendMessage = () => {
     });
     messageInput.value = "";
     sendTyping(false);
-    state.socket.timeout(10_000).emit("send_message", payload, (timeoutError, response) => {
-        if (timeoutError || response?.error) {
-            state.pendingMessageIds.set(key, payload.clientMessageId);
-            const optimisticRow = findMessageRow(`pending:${payload.clientMessageId}`);
-            if (optimisticRow) {
-                state.renderedMessageIds.delete(optimisticRow.dataset.messageId);
-                optimisticRow.remove();
-            }
-            if (!messageInput.value) messageInput.value = text;
-            setChatStatus(timeoutError ? "Message not confirmed. Check your connection and try again." : response.error);
-            return;
-        }
+    const finishSend = message => {
         state.pendingMessageIds.delete(key);
-        if (response?.message) {
-            updateRecentConversation(response.message);
-            if (conversationId() === activeConversationId) renderMessage(response.message);
+        if (message) {
+            updateRecentConversation(message);
+            if (conversationId() === activeConversationId) renderMessage(message);
         }
         updateChatStatus();
+    };
+    const failSend = error => {
+        state.pendingMessageIds.set(key, payload.clientMessageId);
+        const optimisticRow = findMessageRow(`pending:${payload.clientMessageId}`);
+        if (optimisticRow) {
+            state.renderedMessageIds.delete(optimisticRow.dataset.messageId);
+            optimisticRow.remove();
+        }
+        if (!messageInput.value) messageInput.value = text;
+        setChatStatus(error.message || "Message not confirmed. Check your connection and try again.");
+    };
+    const sendOverHttp = async () => {
+        try {
+            const result = await api(`/api/messages/${encodeURIComponent(activeConversationId)}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            finishSend(result.message);
+        } catch (error) {
+            failSend(error);
+        }
+    };
+
+    if (!state.socket?.connected) {
+        sendOverHttp();
+        return;
+    }
+    state.socket.timeout(5000).emit("send_message", payload, (timeoutError, response) => {
+        if (timeoutError) sendOverHttp();
+        else if (response?.error) failSend(new Error(response.error));
+        else finishSend(response?.message);
     });
 };
 
@@ -1490,7 +1541,7 @@ document.addEventListener("keydown", event => {
         await Promise.all([loadConversations(), loadFriendRequests()]);
         renderUsers();
         initSocket();
-        window.setInterval(refreshLiveState, 5000);
+        window.setInterval(refreshLiveState, 15_000);
         document.addEventListener("visibilitychange", () => {
             if (document.visibilityState === "visible") refreshLiveState();
         });
