@@ -2,7 +2,7 @@
   "name": "chatify",
   "version": "1.0.0",
   "description": "Secure one-to-one chat application",
-  "main": "server/server.js",
+  "main": "index.js",
   "scripts": {
     "build": "node scripts/sync-public.js",
     "start": "node server/server.js",
