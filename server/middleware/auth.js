@@ -1,13 +1,9 @@
 const jwt = require("jsonwebtoken");
-const { parse } = require("cookie");
 const User = require("../models/User");
 
 const getTokenFromRequest = req => {
-    if (req.cookies && req.cookies.token) return req.cookies.token;
-
     const header = req.headers.authorization || "";
     if (header.startsWith("Bearer ")) return header.slice(7);
-
     return null;
 };
 
@@ -41,9 +37,26 @@ const protect = async (req, res, next) => {
     }
 };
 
+const protectMedia = async (req, res, next) => {
+    try {
+        const accessToken = String(req.query.access || "");
+        const payload = verifyToken(accessToken || getTokenFromRequest(req));
+        if (!payload) return res.status(401).json({ message: "Authentication required" });
+        if (accessToken && (payload.purpose !== "media" || payload.mediaMessageId !== req.params.filename)) {
+            return res.status(401).json({ message: "Invalid media access token" });
+        }
+
+        const user = await User.findById(payload.userId).select("-passwordHash");
+        if (!user) return res.status(401).json({ message: "User not found" });
+        req.user = user;
+        next();
+    } catch (error) {
+        next(error);
+    }
+};
+
 const authenticateSocket = async socket => {
-    const cookies = parse(socket.handshake.headers.cookie || "");
-    const payload = verifyToken(cookies.token);
+    const payload = verifyToken(socket.handshake.auth?.token);
 
     if (!payload) {
         throw new Error("Authentication required");
@@ -58,4 +71,4 @@ const authenticateSocket = async socket => {
     return user;
 };
 
-module.exports = { protect, authenticateSocket };
+module.exports = { protect, protectMedia, authenticateSocket };

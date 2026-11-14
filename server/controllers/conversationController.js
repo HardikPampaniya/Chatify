@@ -17,7 +17,7 @@ const findPrivateConversation = (a, b) =>
 const getConversations = async (req, res) => {
     const conversations = await Conversation.find({ participants: req.user._id })
         .populate("participants", "username email lastSeen")
-        .populate("lastMessage")
+        .populate({ path: "lastMessage", match: { deletedFor: { $ne: req.user._id } } })
         .sort({ updatedAt: -1 });
 
     res.json({ conversations });

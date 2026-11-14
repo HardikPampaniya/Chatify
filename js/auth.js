@@ -71,7 +71,10 @@ loginForm.addEventListener("submit", event => {
             email: document.getElementById("loginEmail").value,
             password: document.getElementById("loginPassword").value
         }),
-        onSuccess: () => { window.location.href = "/chat.html"; }
+        onSuccess: data => {
+            if (data.token) sessionStorage.setItem("chatify.session", data.token);
+            window.location.href = "/chat.html";
+        }
     });
 });
 

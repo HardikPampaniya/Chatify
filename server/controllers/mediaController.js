@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { pipeline } = require("stream/promises");
 const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
@@ -47,6 +48,25 @@ const setMediaHeaders = (res, message) => {
         "Cache-Control": "private, no-store",
         "Accept-Ranges": "bytes"
     });
+};
+
+const createMediaAccess = async (req, res) => {
+    const messageId = req.params.filename;
+    if (!mongoose.isValidObjectId(messageId)) return res.status(400).json({ message: "Invalid message ID" });
+    const message = await Message.findById(messageId).select("conversation media deletedFor");
+    if (!message?.media) return res.status(404).json({ message: "File not found" });
+    const conversation = await Conversation.findById(message.conversation);
+    if (!conversation || !isParticipant(conversation, req.user._id)) return res.status(403).json({ message: "Access denied" });
+    if (message.deletedFor.some(userId => userId.toString() === req.user._id.toString())) {
+        return res.status(404).json({ message: "File not found" });
+    }
+
+    const access = jwt.sign({
+        userId: req.user._id.toString(),
+        purpose: "media",
+        mediaMessageId: message._id.toString()
+    }, process.env.JWT_SECRET, { expiresIn: "1d" });
+    res.json({ url: `/api/messages/media/${message._id}?access=${encodeURIComponent(access)}` });
 };
 
 const sendMedia = async (req, res) => {
@@ -163,7 +183,9 @@ const getMedia = async (req, res) => {
         ? await Message.findById(identifier)
         : null;
     if (!message) message = await Message.findOne({ "media.filename": identifier });
-    if (!message?.media) return res.status(404).send("File not found");
+    if (!message?.media || message.deletedFor.some(userId => userId.toString() === req.user._id.toString())) {
+        return res.status(404).send("File not found");
+    }
 
     const conversation = await Conversation.findById(message.conversation);
     if (!conversation || !isParticipant(conversation, req.user._id)) {
@@ -220,4 +242,4 @@ const getMedia = async (req, res) => {
     await pipeline(fs.createReadStream(legacyPath), res);
 };
 
-module.exports = { sendMedia, getMedia };
+module.exports = { sendMedia, getMedia, createMediaAccess };

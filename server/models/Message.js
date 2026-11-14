@@ -20,7 +20,7 @@ const messageSchema = new mongoose.Schema(
         },
         type: {
             type: String,
-            enum: ["text", "image", "video", "audio", "document"],
+            enum: ["text", "image", "video", "audio", "document", "deleted"],
             default: "text"
         },
         clientMessageId: {
@@ -40,7 +40,11 @@ const messageSchema = new mongoose.Schema(
             mimeType: String,
             size: Number,
             etag: String
-        }
+        },
+        deletedFor: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+        deletedForEveryone: { type: Boolean, default: false },
+        deletedAt: { type: Date, default: null },
+        deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null }
     },
     { timestamps: true }
 );

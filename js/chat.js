@@ -9,6 +9,7 @@ const state = {
     pendingMessageIds: new Map(),
     socket: null,
     renderedMessageIds: new Set(),
+    syncingLiveState: false,
     selectionToken: 0,
     searchToken: 0,
     searchTimer: null,
@@ -50,8 +51,12 @@ const MAX_MEDIA_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
 const MULTIPART_THRESHOLD_BYTES = 4 * 1024 * 1024;
 
 const api = async (url, options = {}) => {
-    const response = await fetch(url, { credentials: "include", ...options });
+    const headers = new Headers(options.headers || {});
+    const token = sessionStorage.getItem("chatify.session");
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(url, { credentials: "include", ...options, headers });
     if (response.status === 401) {
+        sessionStorage.removeItem("chatify.session");
         window.location.href = "/";
         throw new Error("Your session has ended. Sign in again.");
     }
@@ -123,13 +128,71 @@ const clearMessages = (title, detail) => {
 };
 
 const mediaUrl = message => `/api/messages/media/${encodeURIComponent(getId(message._id))}`;
+const authorizedMediaUrl = async message => {
+    const data = await api(`${mediaUrl(message)}/access`);
+    return data.url;
+};
+const findMessageRow = messageId => [...messages.querySelectorAll(".message-row")]
+    .find(row => row.dataset.messageId === String(messageId));
+
+const removeMessageForMe = ({ messageId, conversationId: deletedConversationId }) => {
+    const row = findMessageRow(messageId);
+    if (row) {
+        state.renderedMessageIds.delete(row.dataset.messageId);
+        row.remove();
+        if (!messages.querySelector(".message-row")) clearMessages("No messages yet", "Send a message, share a file or start a call.");
+    }
+    const conversation = state.conversations.find(item => getId(item._id) === String(deletedConversationId));
+    if (conversation && getId(conversation.lastMessage?._id) === String(messageId)) {
+        conversation.lastMessage = null;
+        renderConversations();
+    }
+};
+
+const markMessageDeletedForEveryone = event => {
+    const row = findMessageRow(event.messageId);
+    if (row) {
+        const bubble = row.querySelector(".bubble");
+        const footer = bubble.querySelector(".message-footer");
+        bubble.replaceChildren();
+        bubble.classList.add("deleted-bubble");
+        const text = document.createElement("span");
+        text.textContent = "This message was deleted";
+        footer?.querySelector(".message-menu")?.remove();
+        bubble.append(text);
+        if (footer) bubble.append(footer);
+    }
+
+    const conversation = state.conversations.find(item => getId(item._id) === String(event.conversationId));
+    if (conversation && getId(conversation.lastMessage?._id) === String(event.messageId)) {
+        conversation.lastMessage = { _id: event.messageId, type: "deleted", text: "This message was deleted" };
+        renderConversations();
+    }
+};
 
 const makeAttachment = message => {
     const link = document.createElement("a");
     link.className = "attachment";
-    link.href = mediaUrl(message);
-    link.download = message.media?.originalName || "attachment";
+    link.href = "#";
     link.setAttribute("aria-label", `Download ${message.media?.originalName || "attachment"}`);
+    link.addEventListener("click", async event => {
+        event.preventDefault();
+        link.setAttribute("aria-busy", "true");
+        try {
+            const url = await authorizedMediaUrl(message);
+            const download = document.createElement("a");
+            download.href = url;
+            download.download = message.media?.originalName || "attachment";
+            download.hidden = true;
+            document.body.appendChild(download);
+            download.click();
+            download.remove();
+        } catch (error) {
+            setChatStatus(error.message || "Could not prepare this download.");
+        } finally {
+            link.removeAttribute("aria-busy");
+        }
+    });
 
     const icon = document.createElement("span");
     icon.className = "attachment-icon";
@@ -149,13 +212,16 @@ const makeAttachment = message => {
 
 const renderMessage = message => {
     const id = getId(message._id || message.id);
+    if (message.clientMessageId) {
+        const optimisticRow = [...messages.querySelectorAll(".message-row")]
+            .find(row => row.dataset.clientMessageId === message.clientMessageId && row.dataset.messageId !== id);
+        if (optimisticRow) {
+            state.renderedMessageIds.delete(optimisticRow.dataset.messageId);
+            optimisticRow.remove();
+        }
+    }
     if (!id || state.renderedMessageIds.has(id)) return;
     state.renderedMessageIds.add(id);
-    const key = pendingKey(getId(message.conversation), message.text || "");
-    if (message.clientMessageId && state.pendingMessageIds.get(key) === message.clientMessageId) {
-        state.pendingMessageIds.delete(key);
-        if (messageInput.value === message.text) messageInput.value = "";
-    }
 
     const empty = byId("emptyMessages");
     if (empty) empty.remove();
@@ -165,19 +231,36 @@ const renderMessage = message => {
     const mine = senderId === getId(state.currentUser?.id);
     row.className = `message-row ${mine ? "mine" : "theirs"}`;
     row.dataset.messageId = id;
+    row.dataset.senderId = senderId;
+    row.dataset.createdAt = message.createdAt || new Date().toISOString();
+    if (message.clientMessageId) row.dataset.clientMessageId = message.clientMessageId;
 
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    if (message.type === "image" || message.type === "video" || message.type === "audio") {
+    if (message.deletedForEveryone || message.type === "deleted") {
+        bubble.classList.add("deleted-bubble");
+        bubble.textContent = "This message was deleted";
+    } else if (message.type === "image" || message.type === "video" || message.type === "audio") {
         const media = document.createElement(message.type === "image" ? "img" : message.type);
         media.className = "media";
-        media.src = mediaUrl(message);
         media.preload = "metadata";
         media.loading = "lazy";
         media.setAttribute("aria-label", message.media?.originalName || `${message.type} attachment`);
         if (message.type === "image") media.alt = message.media?.originalName || "Shared image";
         if (message.type === "video") media.controls = true;
         if (message.type === "audio") media.controls = true;
+        let refreshedAccess = false;
+        const loadMedia = () => authorizedMediaUrl(message).then(url => {
+            if (media.isConnected) media.src = url;
+        }).catch(() => {
+            if (media.isConnected) media.setAttribute("aria-label", "Could not load this attachment");
+        });
+        media.addEventListener("error", () => {
+            if (refreshedAccess || !media.isConnected) return;
+            refreshedAccess = true;
+            loadMedia();
+        }, { once: true });
+        loadMedia();
         bubble.appendChild(media);
     } else if (message.type === "document") {
         bubble.appendChild(makeAttachment(message));
@@ -185,12 +268,42 @@ const renderMessage = message => {
         bubble.textContent = String(message.text || "");
     }
 
+    if (message.pending) row.classList.add("message-pending");
     const time = document.createElement("div");
     time.className = "message-time";
-    time.textContent = formatTime(message.createdAt);
+    time.textContent = message.pending ? "Sending…" : formatTime(message.createdAt);
     const date = new Date(message.createdAt);
     if (!Number.isNaN(date.getTime())) time.dateTime = date.toISOString();
-    bubble.appendChild(time);
+
+    const footer = document.createElement("div");
+    footer.className = "message-footer";
+    footer.appendChild(time);
+    if (!message.pending && !message.deletedForEveryone && message.type !== "deleted") {
+        const menu = document.createElement("details");
+        menu.className = "message-menu";
+        const trigger = document.createElement("summary");
+        trigger.textContent = "⋯";
+        trigger.setAttribute("aria-label", "Message actions");
+        trigger.title = "Message actions";
+        const panel = document.createElement("div");
+        panel.className = "message-menu-panel";
+        const deleteForMe = document.createElement("button");
+        deleteForMe.type = "button";
+        deleteForMe.textContent = "Delete for me";
+        deleteForMe.addEventListener("click", () => deleteChatMessage(message, "me", menu));
+        panel.appendChild(deleteForMe);
+        if (mine) {
+            const deleteForEveryone = document.createElement("button");
+            deleteForEveryone.type = "button";
+            deleteForEveryone.className = "danger-action";
+            deleteForEveryone.textContent = "Delete for everyone";
+            deleteForEveryone.addEventListener("click", () => deleteChatMessage(message, "everyone", menu));
+            panel.appendChild(deleteForEveryone);
+        }
+        menu.append(trigger, panel);
+        footer.appendChild(menu);
+    }
+    bubble.appendChild(footer);
     row.appendChild(bubble);
     messages.appendChild(row);
 
@@ -220,9 +333,9 @@ const loadMessages = async expectedConversationId => {
     renderMessages(data.messages || []);
 };
 
-const makePersonRow = (user, subtitle, actions = []) => {
+const makePersonRow = (user, subtitle, actions = [], variant = "") => {
     const row = document.createElement("div");
-    row.className = "user-item person-row";
+    row.className = `user-item person-row ${variant}`.trim();
 
     const avatar = document.createElement("span");
     avatar.className = "avatar";
@@ -283,13 +396,13 @@ const renderUsers = () => {
         if (relationship === "friend") {
             actions = [{ label: "Message", kind: "primary", onClick: () => selectUser(user) }];
         } else if (relationship === "outgoing") {
-            actions = [{ label: "Request sent", disabled: true }];
+            actions = [{ label: "Request sent", kind: "quiet", disabled: true }];
         } else if (relationship === "incoming") {
             actions = [{ label: "Accept", kind: "primary", onClick: button => acceptFriendRequest(user.relationship.requestId, button) }];
         } else {
-            actions = [{ label: "Add", kind: "primary", onClick: button => sendFriendRequest(user, button) }];
+            actions = [{ label: "Add friend", kind: "primary", onClick: button => sendFriendRequest(user, button) }];
         }
-        userList.appendChild(makePersonRow(user, subtitle, actions));
+        userList.appendChild(makePersonRow(user, subtitle, actions, "search-result-row"));
     });
 };
 
@@ -307,12 +420,12 @@ const renderFriendRequests = () => {
         list.appendChild(makePersonRow(request.user, "Wants to connect with you", [
             { label: "Accept", kind: "primary", onClick: button => acceptFriendRequest(request._id, button) },
             { label: "Decline", kind: "quiet", onClick: button => rejectFriendRequest(request._id, button) }
-        ]));
+        ], "request-row incoming-request"));
     });
     outgoing.forEach(request => {
         list.appendChild(makePersonRow(request.user, "Waiting for their response", [
-            { label: "Cancel", kind: "quiet", onClick: button => cancelFriendRequest(request._id, button) }
-        ]));
+            { label: "Cancel request", kind: "quiet", onClick: button => cancelFriendRequest(request._id, button) }
+        ], "request-row outgoing-request"));
     });
 };
 
@@ -354,7 +467,7 @@ const sendFriendRequest = async (user, button) => {
         await refreshPeople();
     } catch (error) {
         button.disabled = false;
-        button.textContent = "Add";
+        button.textContent = "Add friend";
         byId("contactStatus").textContent = error.message || "Could not send request.";
     }
 };
@@ -432,7 +545,7 @@ const renderConversations = () => {
         const preview = document.createElement("span");
         preview.className = "user-email";
         const lastMessage = conversation.lastMessage;
-        preview.textContent = !lastMessage ? "Start a conversation" : lastMessage.type === "text" ? lastMessage.text || "Message" : ({ image: "Photo", video: "Video", audio: "Audio", document: "File" }[lastMessage.type] || "Attachment");
+        preview.textContent = !lastMessage ? "Start a conversation" : lastMessage.type === "deleted" ? "This message was deleted" : lastMessage.type === "text" ? lastMessage.text || "Message" : ({ image: "Photo", video: "Video", audio: "Audio", document: "File" }[lastMessage.type] || "Attachment");
         copy.append(name, preview);
         button.append(avatar, copy);
         button.addEventListener("click", () => selectUser(person));
@@ -457,6 +570,27 @@ const updateRecentConversation = message => {
     state.conversations[index].updatedAt = message.createdAt;
     state.conversations.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
     renderConversations();
+};
+
+const deleteChatMessage = async (message, scope, menu) => {
+    const prompt = scope === "everyone"
+        ? "Delete this message and its media for everyone?"
+        : "Remove this message from your chat?";
+    if (!window.confirm(prompt)) return;
+
+    if (menu) menu.open = false;
+    try {
+        const conversation = getId(message.conversation) || conversationId();
+        const result = await api(`/api/messages/${encodeURIComponent(conversation)}/${encodeURIComponent(getId(message._id))}`, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ scope })
+        });
+        if (scope === "me") removeMessageForMe(result);
+        else markMessageDeletedForEveryone(result);
+    } catch (error) {
+        setChatStatus(error.message || "Could not delete this message.");
+    }
 };
 
 const selectUser = async user => {
@@ -514,7 +648,13 @@ const sendTyping = typing => {
 };
 
 const initSocket = () => {
-    state.socket = io({ withCredentials: true, reconnection: true, reconnectionAttempts: Infinity, reconnectionDelayMax: 5000 });
+    state.socket = io({
+        withCredentials: true,
+        auth: { token: sessionStorage.getItem("chatify.session") || "" },
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelayMax: 5000
+    });
 
     state.socket.on("connect", async () => {
         updateConversationControls();
@@ -559,10 +699,11 @@ const initSocket = () => {
         if (conversationId() && getId(message.conversation) === conversationId()) renderMessage(message);
     });
 
+    state.socket.on("message:deleted_for_me", removeMessageForMe);
+    state.socket.on("message:deleted_for_everyone", markMessageDeletedForEveryone);
+
     state.socket.on("friend_requests:updated", () => {
-        loadFriendRequests().catch(() => {});
-        searchUsers().catch(() => {});
-        loadConversations().catch(() => {});
+        refreshLiveState();
     });
 
     state.socket.on("chat_error", message => {
@@ -668,30 +809,64 @@ const initSocket = () => {
     });
 };
 
+const refreshLiveState = async () => {
+    if (state.syncingLiveState || document.visibilityState === "hidden") return;
+    state.syncingLiveState = true;
+    try {
+        await Promise.all([
+            loadFriendRequests(),
+            loadConversations(),
+            byId("userSearch").value.trim().length >= 2 ? searchUsers() : Promise.resolve()
+        ]);
+    } catch {
+        // Keep the current view; the next timer or socket event will retry.
+    } finally {
+        state.syncingLiveState = false;
+    }
+};
+
 const sendMessage = () => {
     const text = messageInput.value.trim();
     if (!conversationId() || !text || !state.socket?.connected || sendBtn.disabled) return;
+    const activeConversationId = conversationId();
+    const key = pendingKey(activeConversationId, text);
     const payload = {
-        conversationId: conversationId(),
+        conversationId: activeConversationId,
         text,
-        clientMessageId: state.pendingMessageIds.get(pendingKey(conversationId(), text)) || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`)
+        clientMessageId: state.pendingMessageIds.get(key) || (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`)
     };
-    const key = pendingKey(conversationId(), text);
-    state.pendingMessageIds.set(key, payload.clientMessageId);
-    sendBtn.disabled = true;
-    sendBtn.querySelector("span:first-child").textContent = "Sending";
+    state.pendingMessageIds.delete(key);
+    renderMessage({
+        _id: `pending:${payload.clientMessageId}`,
+        conversation: activeConversationId,
+        sender: state.currentUser.id,
+        receiver: getId(state.selectedUser?._id),
+        clientMessageId: payload.clientMessageId,
+        text,
+        type: "text",
+        createdAt: new Date().toISOString(),
+        pending: true
+    });
+    messageInput.value = "";
+    sendTyping(false);
     state.socket.timeout(10_000).emit("send_message", payload, (timeoutError, response) => {
-        sendBtn.querySelector("span:first-child").textContent = "Send";
-        updateConversationControls();
         if (timeoutError || response?.error) {
+            state.pendingMessageIds.set(key, payload.clientMessageId);
+            const optimisticRow = findMessageRow(`pending:${payload.clientMessageId}`);
+            if (optimisticRow) {
+                state.renderedMessageIds.delete(optimisticRow.dataset.messageId);
+                optimisticRow.remove();
+            }
+            if (!messageInput.value) messageInput.value = text;
             setChatStatus(timeoutError ? "Message not confirmed. Check your connection and try again." : response.error);
             return;
         }
         state.pendingMessageIds.delete(key);
-        messageInput.value = "";
-        sendTyping(false);
+        if (response?.message) {
+            updateRecentConversation(response.message);
+            if (conversationId() === activeConversationId) renderMessage(response.message);
+        }
         updateChatStatus();
-        messageInput.focus({ preventScroll: true });
     });
 };
 
@@ -734,6 +909,7 @@ byId("backToList").addEventListener("click", () => {
 byId("logoutBtn").addEventListener("click", async () => {
     try {
         await api("/api/auth/logout", { method: "POST" });
+        sessionStorage.removeItem("chatify.session");
         window.location.href = "/";
     } catch (error) {
         setChatStatus(error.message);
@@ -1314,6 +1490,10 @@ document.addEventListener("keydown", event => {
         await Promise.all([loadConversations(), loadFriendRequests()]);
         renderUsers();
         initSocket();
+        window.setInterval(refreshLiveState, 5000);
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") refreshLiveState();
+        });
     } catch (error) {
         if (error.message !== "Your session has ended. Sign in again.") {
             byId("contactStatus").textContent = error.message || "Could not load people. Refresh to try again.";

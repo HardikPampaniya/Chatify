@@ -1,5 +1,8 @@
 const api = async (url, options = {}) => {
-    const response = await fetch(url, { credentials: "include", ...options });
+    const headers = new Headers(options.headers || {});
+    const token = sessionStorage.getItem("chatify.session");
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(url, { credentials: "include", ...options, headers });
     if (response.status === 401) {
         window.location.href = "/";
         throw new Error("Your session has ended. Sign in again.");
@@ -30,6 +33,7 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
     button.disabled = true;
     try {
         await api("/api/auth/logout", { method: "POST" });
+        sessionStorage.removeItem("chatify.session");
         window.location.href = "/";
     } catch (error) {
         button.disabled = false;

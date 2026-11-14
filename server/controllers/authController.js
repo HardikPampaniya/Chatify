@@ -4,15 +4,12 @@ const User = require("../models/User");
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-const setAuthCookie = (res, token) => {
-    res.cookie("token", token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "strict",
-        maxAge: 7 * 24 * 60 * 60 * 1000,
-        path: "/"
-    });
-};
+const clearAuthCookie = res => res.clearCookie("token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    path: "/"
+});
 
 const register = async (req, res) => {
     const username = String(req.body.username || "").trim();
@@ -72,21 +69,17 @@ const login = async (req, res) => {
         { expiresIn: "7d" }
     );
 
-    setAuthCookie(res, token);
+    clearAuthCookie(res);
 
     res.json({
         message: "Login successful",
+        token,
         user: { id: user._id, username: user.username, email: user.email }
     });
 };
 
 const logout = (req, res) => {
-    res.clearCookie("token", {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "strict",
-        path: "/"
-    });
+    clearAuthCookie(res);
 
     res.json({ message: "Logged out" });
 };

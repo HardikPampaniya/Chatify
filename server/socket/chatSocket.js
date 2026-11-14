@@ -1,5 +1,4 @@
 const jwt = require("jsonwebtoken");
-const { parse } = require("cookie");
 const mongoose = require("mongoose");
 const crypto = require("crypto");
 const User = require("../models/User");
@@ -12,8 +11,7 @@ const roomFor = conversationId => `conversation:${conversationId}`;
 
 const authenticate = async socket => {
     await connectDB();
-    const cookies = parse(socket.handshake.headers.cookie || "");
-    const token = cookies.token;
+    const token = socket.handshake.auth?.token;
     if (!token) throw new Error("Authentication required");
 
     const payload = jwt.verify(token, process.env.JWT_SECRET);
