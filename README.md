@@ -1,6 +1,6 @@
-# ChatApp
+# Chatify
 
-ChatApp is a one-to-one chat application built with Node.js, Express, MongoDB/Mongoose, Socket.IO and browser-native WebRTC. The server continues to serve the existing HTML, CSS and JavaScript client from the same origin.
+Chatify is a one-to-one chat application built with Node.js, Express, MongoDB/Mongoose, Socket.IO and browser-native WebRTC. The server continues to serve the existing HTML, CSS and JavaScript client from the same origin.
 
 ## Local setup
 

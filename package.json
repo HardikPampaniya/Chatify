@@ -1,5 +1,5 @@
 {
-  "name": "chatapp",
+  "name": "chatify",
   "version": "1.0.0",
   "description": "Secure one-to-one chat application",
   "main": "server/server.js",
