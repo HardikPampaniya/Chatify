@@ -15,15 +15,15 @@ The app requires `MONGO_URI` and `JWT_SECRET` to start. Text chat and calls can 
 
 ## Environment variable names
 
-Set these in your local `.env` or the Render service environment. Set `CLIENT_URL` to the production origin on Render. This guide intentionally documents names and purposes only; it contains no credentials or production values.
+Set these in your local `.env` or the hosting service environment. Set `CLIENT_URL` to the exact production origin. This guide intentionally documents names and purposes only; it contains no credentials or production values.
 
 | Name | Use |
 | --- | --- |
 | `MONGO_URI` | Existing MongoDB connection string; required. |
 | `JWT_SECRET` | Signing key for existing authentication cookies; required. |
 | `CLIENT_URL` | Exact browser origin allowed for REST and Socket.IO; set this in production. |
-| `NODE_ENV` | Use production mode on Render so auth cookies are marked secure. |
-| `PORT` | Supplied by Render; local default is 3000. |
+| `NODE_ENV` | Use `production` in production so auth cookies are marked secure. |
+| `PORT` | Supplied by Render; local default is 3000. Vercel manages its function port. |
 | `MEDIA_BUCKET` | Private S3-compatible bucket name; required for uploads. |
 | `AWS_REGION` | Object storage region; required by AWS S3, defaults to `us-east-1`. |
 | `AWS_ACCESS_KEY_ID` | Optional credential for the AWS SDK default credential chain. |
@@ -51,6 +51,19 @@ Example `ICE_SERVERS_JSON` structure (replace the angle-bracket placeholders wit
   }
 ]
 ```
+
+## Vercel deployment
+
+The root `index.js` exports the Express HTTP server, and `public/` contains the pages and static assets Vercel serves. Vercel's Express integration runs the API and Socket.IO server as a Function.
+
+1. Connect the GitHub repository and set the project root to the repository root.
+2. Use the Express framework preset. Set the build command to `npm run build` (or leave Vercel's detected command if it selects that script). Do not set a separate output directory.
+3. Add the required environment variables in Project Settings → Environment Variables: `MONGO_URI`, `JWT_SECRET`, `CLIENT_URL`, and `NODE_ENV=production`. `CLIENT_URL` must be the exact deployed URL, such as `https://your-project.vercel.app`.
+4. For media uploads, also add `MEDIA_BUCKET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and any provider-specific `S3_ENDPOINT` / `S3_FORCE_PATH_STYLE` values.
+5. In the bucket's CORS configuration, allow `PUT` from the deployed app origin, allow the request headers, and expose the `ETag` response header. Multipart chunks upload directly from the browser to object storage to stay within Vercel's 4.5 MB Function request limit.
+6. Deploy, then check `/healthz` and the Vercel runtime logs if API requests fail. The home page and static files are served from `public/`.
+
+The app keeps online presence and active call coordination in process memory. Vercel can run more than one Function instance, so presence, live message delivery, and calls between clients connected to different instances need shared realtime state (for example, a Redis-backed Socket.IO adapter and shared call registry) for reliable multi-instance behavior. Persistent messages are stored in MongoDB.
 
 ## Render deployment
 

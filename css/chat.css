@@ -46,6 +46,12 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid 
 .user-copy { min-width: 0; flex: 1; }
 .user-name { overflow: hidden; color: var(--ink); font-size: 14px; font-weight: 740; text-overflow: ellipsis; white-space: nowrap; }
 .user-email { overflow: hidden; margin-top: 4px; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.person-row { cursor: default; }
+.user-actions { display: flex; flex: 0 0 auto; gap: 5px; }
+.request-action { min-height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--ink); font-size: 10px; font-weight: 750; cursor: pointer; }
+.request-action.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+.request-action.quiet { color: var(--muted); }
+.request-action:disabled { opacity: .6; cursor: default; }
 .conversation-panel { display: grid; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr) auto auto; background: var(--surface); }
 .conversation-header { display: flex; min-width: 0; align-items: center; gap: 14px; padding: 17px 22px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .conversation-heading { min-width: 0; flex: 1; }

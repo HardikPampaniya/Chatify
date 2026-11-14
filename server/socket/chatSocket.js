@@ -5,10 +5,13 @@ const crypto = require("crypto");
 const User = require("../models/User");
 const Conversation = require("../models/Conversation");
 const Message = require("../models/Message");
+const connectDB = require("../config/database");
+const { isAllowedOrigin } = require("../config/clientOrigin");
 
 const roomFor = conversationId => `conversation:${conversationId}`;
 
 const authenticate = async socket => {
+    await connectDB();
     const cookies = parse(socket.handshake.headers.cookie || "");
     const token = cookies.token;
     if (!token) throw new Error("Authentication required");
@@ -64,9 +67,7 @@ const initializeChatSocket = io => {
     io.use(async (socket, next) => {
         try {
             const origin = socket.handshake.headers.origin;
-            const configuredOrigin = process.env.CLIENT_URL || "http://localhost:3000";
-            const allowedOrigin = new URL(configuredOrigin).origin;
-            if (origin && origin !== allowedOrigin) throw new Error("Origin rejected");
+            if (!isAllowedOrigin(origin)) throw new Error("Origin rejected");
             socket.user = await authenticate(socket);
             next();
         } catch {

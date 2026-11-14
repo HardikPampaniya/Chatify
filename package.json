@@ -4,12 +4,15 @@
   "description": "Secure one-to-one chat application",
   "main": "server/server.js",
   "scripts": {
+    "build": "node scripts/sync-public.js",
     "start": "node server/server.js",
     "dev": "nodemon server/server.js",
     "test": "node --test"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1156.0",
+    "@smithy/core": "^3.36.2",
+    "@smithy/signature-v4": "^5.7.4",
     "bcryptjs": "^3.0.2",
     "cookie": "^1.0.2",
     "cookie-parser": "^1.4.7",

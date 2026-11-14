@@ -4,11 +4,14 @@ const state = {
     conversation: null,
     conversations: [],
     users: [],
+    friendRequests: { incoming: [], outgoing: [] },
     onlineUsers: new Set(),
     pendingMessageIds: new Map(),
     socket: null,
     renderedMessageIds: new Set(),
     selectionToken: 0,
+    searchToken: 0,
+    searchTimer: null,
     typingTimer: null,
     remoteTypingTimer: null,
     remoteTyping: false,
@@ -44,7 +47,7 @@ const getId = value => String(value && typeof value === "object" ? value._id || 
 const conversationId = () => state.conversation ? getId(state.conversation._id) : "";
 const pendingKey = (id, text) => `${id}\u0000${text}`;
 const MAX_MEDIA_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
-const MULTIPART_THRESHOLD_BYTES = 50 * 1024 * 1024;
+const MULTIPART_THRESHOLD_BYTES = 4 * 1024 * 1024;
 
 const api = async (url, options = {}) => {
     const response = await fetch(url, { credentials: "include", ...options });
@@ -217,42 +220,176 @@ const loadMessages = async expectedConversationId => {
     renderMessages(data.messages || []);
 };
 
-const renderUsers = () => {
-    const search = byId("userSearch").value.toLowerCase().trim();
-    const filtered = state.users.filter(user => `${user.username} ${user.email}`.toLowerCase().includes(search));
-    userList.replaceChildren();
-    byId("contactStatus").textContent = filtered.length ? `${filtered.length} ${filtered.length === 1 ? "person" : "people"}` : (search ? "No people match your search." : "No other people have joined yet.");
+const makePersonRow = (user, subtitle, actions = []) => {
+    const row = document.createElement("div");
+    row.className = "user-item person-row";
 
-    filtered.forEach(user => {
-        const id = getId(user._id);
-        const online = state.onlineUsers.has(id);
+    const avatar = document.createElement("span");
+    avatar.className = "avatar";
+    avatar.textContent = (user.username || "?").charAt(0).toUpperCase();
+    const online = state.onlineUsers.has(getId(user._id));
+    const dot = document.createElement("span");
+    dot.className = `presence-dot ${online ? "online" : ""}`;
+    dot.setAttribute("aria-hidden", "true");
+    avatar.appendChild(dot);
+
+    const copy = document.createElement("span");
+    copy.className = "user-copy";
+    const name = document.createElement("span");
+    name.className = "user-name";
+    name.textContent = user.username || "Chat user";
+    const detail = document.createElement("span");
+    detail.className = "user-email";
+    detail.textContent = subtitle;
+    copy.append(name, detail);
+
+    const actionsWrap = document.createElement("span");
+    actionsWrap.className = "user-actions";
+    actions.forEach(action => {
         const button = document.createElement("button");
         button.type = "button";
-        button.className = `user-item ${getId(state.selectedUser?._id) === id ? "active" : ""}`;
-        button.setAttribute("aria-current", getId(state.selectedUser?._id) === id ? "true" : "false");
-        button.setAttribute("aria-label", `${user.username}, ${online ? "online" : "offline"}`);
-
-        const avatar = document.createElement("span");
-        avatar.className = "avatar";
-        avatar.textContent = (user.username || "?").charAt(0).toUpperCase();
-        const dot = document.createElement("span");
-        dot.className = `presence-dot ${online ? "online" : ""}`;
-        dot.setAttribute("aria-hidden", "true");
-        avatar.appendChild(dot);
-
-        const copy = document.createElement("span");
-        copy.className = "user-copy";
-        const name = document.createElement("span");
-        name.className = "user-name";
-        name.textContent = user.username;
-        const email = document.createElement("span");
-        email.className = "user-email";
-        email.textContent = online ? "Online" : user.email;
-        copy.append(name, email);
-        button.append(avatar, copy);
-        button.addEventListener("click", () => selectUser(user));
-        userList.appendChild(button);
+        button.className = `request-action ${action.kind || ""}`;
+        button.textContent = action.label;
+        button.disabled = Boolean(action.disabled);
+        button.addEventListener("click", event => {
+            event.stopPropagation();
+            action.onClick(button);
+        });
+        actionsWrap.appendChild(button);
     });
+
+    row.append(avatar, copy);
+    if (actions.length) row.appendChild(actionsWrap);
+    return row;
+};
+
+const renderUsers = () => {
+    const search = byId("userSearch").value.trim();
+    userList.replaceChildren();
+    if (search.length < 2) {
+        byId("contactStatus").textContent = "Search by username (at least 2 characters).";
+        return;
+    }
+    if (!state.users.length) {
+        byId("contactStatus").textContent = "No usernames match that search.";
+        return;
+    }
+
+    byId("contactStatus").textContent = `${state.users.length} ${state.users.length === 1 ? "match" : "matches"}`;
+    state.users.forEach(user => {
+        const relationship = user.relationship?.status || "none";
+        const subtitle = state.onlineUsers.has(getId(user._id)) ? "Online" : (relationship === "friend" ? "Connected" : "Send a request before chatting");
+        let actions;
+        if (relationship === "friend") {
+            actions = [{ label: "Message", kind: "primary", onClick: () => selectUser(user) }];
+        } else if (relationship === "outgoing") {
+            actions = [{ label: "Request sent", disabled: true }];
+        } else if (relationship === "incoming") {
+            actions = [{ label: "Accept", kind: "primary", onClick: button => acceptFriendRequest(user.relationship.requestId, button) }];
+        } else {
+            actions = [{ label: "Add", kind: "primary", onClick: button => sendFriendRequest(user, button) }];
+        }
+        userList.appendChild(makePersonRow(user, subtitle, actions));
+    });
+};
+
+const renderFriendRequests = () => {
+    const list = byId("friendRequestList");
+    const incoming = state.friendRequests.incoming || [];
+    const outgoing = state.friendRequests.outgoing || [];
+    list.replaceChildren();
+    const total = incoming.length + outgoing.length;
+    byId("requestsStatus").textContent = total
+        ? `${incoming.length} incoming · ${outgoing.length} sent`
+        : "No pending requests.";
+
+    incoming.forEach(request => {
+        list.appendChild(makePersonRow(request.user, "Wants to connect with you", [
+            { label: "Accept", kind: "primary", onClick: button => acceptFriendRequest(request._id, button) },
+            { label: "Decline", kind: "quiet", onClick: button => rejectFriendRequest(request._id, button) }
+        ]));
+    });
+    outgoing.forEach(request => {
+        list.appendChild(makePersonRow(request.user, "Waiting for their response", [
+            { label: "Cancel", kind: "quiet", onClick: button => cancelFriendRequest(request._id, button) }
+        ]));
+    });
+};
+
+const loadFriendRequests = async () => {
+    const data = await api("/api/users/requests");
+    state.friendRequests = { incoming: data.incoming || [], outgoing: data.outgoing || [] };
+    renderFriendRequests();
+};
+
+const searchUsers = async (search = byId("userSearch").value.trim()) => {
+    const query = search.trim();
+    const token = ++state.searchToken;
+    if (query.length < 2) {
+        state.users = [];
+        renderUsers();
+        return;
+    }
+
+    byId("contactStatus").textContent = "Searching…";
+    try {
+        const data = await api(`/api/users?q=${encodeURIComponent(query)}`);
+        if (token !== state.searchToken) return;
+        state.users = data.users || [];
+        renderUsers();
+    } catch (error) {
+        if (token === state.searchToken) byId("contactStatus").textContent = error.message || "Search failed. Try again.";
+    }
+};
+
+const refreshPeople = async () => {
+    await Promise.all([loadFriendRequests(), searchUsers()]);
+};
+
+const sendFriendRequest = async (user, button) => {
+    button.disabled = true;
+    button.textContent = "Sending…";
+    try {
+        await api(`/api/users/requests/${encodeURIComponent(getId(user._id))}`, { method: "POST" });
+        await refreshPeople();
+    } catch (error) {
+        button.disabled = false;
+        button.textContent = "Add";
+        byId("contactStatus").textContent = error.message || "Could not send request.";
+    }
+};
+
+const acceptFriendRequest = async (requestId, button) => {
+    if (button) { button.disabled = true; button.textContent = "Accepting…"; }
+    try {
+        await api(`/api/users/requests/${encodeURIComponent(getId(requestId))}/accept`, { method: "POST" });
+        await Promise.all([refreshPeople(), loadConversations()]);
+    } catch (error) {
+        if (button) { button.disabled = false; button.textContent = "Accept"; }
+        byId("requestsStatus").textContent = error.message || "Could not accept request.";
+    }
+};
+
+const rejectFriendRequest = async (requestId, button) => {
+    button.disabled = true;
+    try {
+        await api(`/api/users/requests/${encodeURIComponent(getId(requestId))}/reject`, { method: "POST" });
+        await refreshPeople();
+    } catch (error) {
+        button.disabled = false;
+        byId("requestsStatus").textContent = error.message || "Could not decline request.";
+    }
+};
+
+const cancelFriendRequest = async (requestId, button) => {
+    button.disabled = true;
+    try {
+        await api(`/api/users/requests/${encodeURIComponent(getId(requestId))}`, { method: "DELETE" });
+        await refreshPeople();
+    } catch (error) {
+        button.disabled = false;
+        byId("requestsStatus").textContent = error.message || "Could not cancel request.";
+    }
 };
 
 const renderConversations = () => {
@@ -422,6 +559,12 @@ const initSocket = () => {
         if (conversationId() && getId(message.conversation) === conversationId()) renderMessage(message);
     });
 
+    state.socket.on("friend_requests:updated", () => {
+        loadFriendRequests().catch(() => {});
+        searchUsers().catch(() => {});
+        loadConversations().catch(() => {});
+    });
+
     state.socket.on("chat_error", message => {
         if (state.selectedUser) setChatStatus(String(message || "Chat error"));
     });
@@ -569,8 +712,9 @@ messageInput.addEventListener("blur", () => {
 });
 
 byId("userSearch").addEventListener("input", () => {
-    renderUsers();
     renderConversations();
+    clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(() => searchUsers(), 250);
 });
 byId("backToList").addEventListener("click", () => {
     const id = conversationId();
@@ -630,12 +774,14 @@ const hideUpload = () => {
     clearUploadPreview();
 };
 
-const sendMultipartPart = (conversation, uploadId, partNumber, chunk, uploadedBytes, file, onProgress) =>
-    new Promise((resolve, reject) => {
+const sendMultipartPart = async (conversation, uploadId, partNumber, chunk, uploadedBytes, file, onProgress) => {
+    const partEndpoint = `/api/messages/${encodeURIComponent(conversation)}/media/multipart/${encodeURIComponent(uploadId)}/parts/${partNumber}`;
+    const { url } = await api(`${partEndpoint}/presign`, { method: "POST" });
+    const etag = await new Promise((resolve, reject) => {
         const request = new XMLHttpRequest();
         state.uploadRequest = request;
-        request.open("PUT", `/api/messages/${encodeURIComponent(conversation)}/media/multipart/${encodeURIComponent(uploadId)}/parts/${partNumber}`);
-        request.withCredentials = true;
+        request.open("PUT", url);
+        request.withCredentials = false;
         request.setRequestHeader("Content-Type", "application/octet-stream");
         request.upload.addEventListener("progress", event => {
             if (!event.lengthComputable) return;
@@ -643,18 +789,16 @@ const sendMultipartPart = (conversation, uploadId, partNumber, chunk, uploadedBy
         });
         request.addEventListener("load", () => {
             state.uploadRequest = null;
-            let response = {};
-            try { response = JSON.parse(request.responseText); } catch { /* Invalid responses get a readable fallback. */ }
-            if (request.status === 401) {
-                window.location.href = "/";
-                reject(new Error("Your session has ended. Sign in again."));
-                return;
-            }
             if (request.status < 200 || request.status >= 300) {
-                reject(new Error(response.message || "Upload failed. Try again."));
+                reject(new Error("Storage rejected this part. Check the bucket's CORS settings and storage permissions."));
                 return;
             }
-            resolve(response);
+            const uploadedEtag = request.getResponseHeader("ETag");
+            if (!uploadedEtag) {
+                reject(new Error("The bucket must expose its ETag response header in CORS settings."));
+                return;
+            }
+            resolve(uploadedEtag);
         });
         request.addEventListener("error", () => {
             state.uploadRequest = null;
@@ -666,6 +810,13 @@ const sendMultipartPart = (conversation, uploadId, partNumber, chunk, uploadedBy
         });
         request.send(chunk);
     });
+    state.uploadRequest = null;
+    await api(`${partEndpoint}/confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ etag })
+    });
+};
 
 const uploadLargeFile = async (id, file, uploadKey, clientMessageId) => {
     let uploadId = null;
@@ -1160,9 +1311,7 @@ document.addEventListener("keydown", event => {
             email: me.user.email
         };
         byId("currentUser").textContent = me.user.email;
-        const data = await api("/api/users");
-        state.users = data.users || [];
-        await loadConversations();
+        await Promise.all([loadConversations(), loadFriendRequests()]);
         renderUsers();
         initSocket();
     } catch (error) {

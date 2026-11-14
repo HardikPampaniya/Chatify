@@ -9,6 +9,9 @@ const {
     AbortMultipartUploadCommand,
     HeadObjectCommand
 } = require("@aws-sdk/client-s3");
+const { HttpRequest } = require("@smithy/core/protocols");
+const { Sha256 } = require("@smithy/core/checksum");
+const { SignatureV4 } = require("@smithy/signature-v4");
 
 const bucket = process.env.MEDIA_BUCKET;
 const s3 = bucket
@@ -75,6 +78,53 @@ const uploadMediaPart = async ({ key, uploadId, partNumber, body }) => {
     return result.ETag;
 };
 
+const encodeQueryPart = value => encodeURIComponent(String(value)).replace(/[!'()*]/g, character =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+);
+
+const encodePathPart = value => encodeQueryPart(value);
+
+const createPresignedMediaPartUrl = async ({ key, uploadId, partNumber }) => {
+    requireStorage();
+    try {
+        const region = await s3.config.region();
+        const credentials = await s3.config.credentials();
+        const endpoint = new URL(process.env.S3_ENDPOINT || `https://s3.${region}.amazonaws.com`);
+        const pathStyle = process.env.S3_FORCE_PATH_STYLE === "true";
+        const hostname = pathStyle ? endpoint.hostname : `${bucket}.${endpoint.hostname}`;
+        const host = endpoint.port ? `${hostname}:${endpoint.port}` : hostname;
+        const endpointPath = endpoint.pathname === "/" ? "" : endpoint.pathname.replace(/\/+$/, "");
+        const objectPath = key.split("/").map(encodePathPart).join("/");
+        const bucketPath = pathStyle ? `/${encodePathPart(bucket)}` : "";
+        const request = new HttpRequest({
+            protocol: endpoint.protocol,
+            hostname,
+            port: endpoint.port ? Number(endpoint.port) : undefined,
+            method: "PUT",
+            path: `${endpointPath}${bucketPath}/${objectPath}`,
+            query: { partNumber: String(partNumber), uploadId },
+            headers: { host }
+        });
+        const signer = new SignatureV4({
+            credentials,
+            region,
+            service: "s3",
+            sha256: Sha256,
+            uriEscapePath: false
+        });
+        const signed = await signer.presign(request, { expiresIn: 900 });
+        const query = Object.entries(signed.query)
+            .flatMap(([name, values]) => (Array.isArray(values) ? values : [values]).map(value => [name, value]))
+            .sort(([nameA, valueA], [nameB, valueB]) => nameA.localeCompare(nameB) || String(valueA).localeCompare(String(valueB)))
+            .map(([name, value]) => `${encodeQueryPart(name)}=${encodeQueryPart(value)}`)
+            .join("&");
+        return `${endpoint.protocol}//${host}${signed.path}?${query}`;
+    } catch (error) {
+        error.storageOperation = "PresignUploadPart";
+        throw error;
+    }
+};
+
 const completeMultipartMediaUpload = async ({ key, uploadId, parts }) => {
     requireStorage();
     return sendStorageCommand("CompleteMultipartUpload", new CompleteMultipartUploadCommand({
@@ -111,6 +161,7 @@ module.exports = {
     putMedia,
     createMultipartMediaUpload,
     uploadMediaPart,
+    createPresignedMediaPartUrl,
     completeMultipartMediaUpload,
     abortMultipartMediaUpload,
     getMedia,

@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const User = require("../models/User");
 const Conversation = require("../models/Conversation");
+const FriendRequest = require("../models/FriendRequest");
 
 const idString = value => {
     const id = value && typeof value === "object" && value._id ? value._id : value;
@@ -41,6 +42,17 @@ const createConversation = async (req, res) => {
     let conversation = await findPrivateConversation(req.user._id, otherUser._id);
 
     if (!conversation) {
+        const acceptedRequest = await FriendRequest.findOne({
+            status: "accepted",
+            $or: [
+                { requester: req.user._id, recipient: otherUser._id },
+                { requester: otherUser._id, recipient: req.user._id }
+            ]
+        });
+        if (!acceptedRequest) {
+            return res.status(403).json({ message: "Send and accept a friend request before starting a chat" });
+        }
+
         conversation = await Conversation.create({
             participants: [req.user._id, otherUser._id]
         });

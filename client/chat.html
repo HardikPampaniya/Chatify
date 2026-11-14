@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#151b31">
     <title>ChatApp - Private conversations</title>
+    <link rel="icon" type="image/svg+xml" href="/images/favicon.svg">
     <link rel="stylesheet" href="/css/chat.css">
 </head>
 <body>
@@ -23,18 +24,23 @@
 
             <div class="search-wrap">
                 <label for="userSearch">Find people</label>
-                <input id="userSearch" type="search" placeholder="Search people..." autocomplete="off">
+                <input id="userSearch" type="search" placeholder="Search by username..." autocomplete="off" minlength="2">
             </div>
 
             <div class="lists-scroll">
+                <section class="sidebar-section" aria-labelledby="requestsHeading">
+                    <h2 id="requestsHeading">Friend requests</h2>
+                    <p id="requestsStatus" class="contact-status muted" aria-live="polite">Loading requests…</p>
+                    <nav id="friendRequestList" class="user-list" aria-label="Friend requests"></nav>
+                </section>
                 <section class="sidebar-section" aria-labelledby="recentHeading">
                     <h2 id="recentHeading">Recent conversations</h2>
                     <p id="conversationEmpty" class="contact-status muted">No conversations yet.</p>
                     <nav id="conversationList" class="user-list" aria-label="Recent conversations"></nav>
                 </section>
                 <section class="sidebar-section" aria-labelledby="peopleHeading">
-                    <h2 id="peopleHeading">People</h2>
-                    <p id="contactStatus" class="contact-status muted" aria-live="polite">Loading people…</p>
+                    <h2 id="peopleHeading">Search results</h2>
+                    <p id="contactStatus" class="contact-status muted" aria-live="polite">Search by username to find someone.</p>
                     <nav id="userList" class="user-list" aria-label="People"></nav>
                 </section>
             </div>

@@ -6,7 +6,7 @@ const Message = require("../models/Message");
 const { isParticipant } = require("./conversationController");
 const {
     createMultipartMediaUpload,
-    uploadMediaPart,
+    createPresignedMediaPartUrl,
     completeMultipartMediaUpload,
     abortMultipartMediaUpload,
     getMediaMetadata,
@@ -128,35 +128,33 @@ const initiateMultipartUpload = async (req, res) => {
     res.status(201).json({ uploadId, partSize: MEDIA_PART_SIZE_BYTES });
 };
 
-const uploadMultipartPart = async (req, res) => {
+const getUploadPart = async req => {
     const upload = await findUpload(req, req.params.uploadId);
     const partNumber = Number(req.params.partNumber);
     const totalParts = Math.ceil(upload.size / MEDIA_PART_SIZE_BYTES);
     if (!Number.isSafeInteger(partNumber) || partNumber < 1 || partNumber > totalParts) {
         throw fail("Invalid upload part number");
     }
-    if (!Buffer.isBuffer(req.body)) throw fail("Upload part is empty");
+    return { upload, partNumber };
+};
 
-    const expectedSize = partNumber === totalParts
-        ? upload.size - MEDIA_PART_SIZE_BYTES * (totalParts - 1)
-        : MEDIA_PART_SIZE_BYTES;
-    if (req.body.length !== expectedSize) throw fail("Upload part size is invalid");
-
-    if (partNumber === 1) {
-        const definition = getMediaDefinition({ originalname: upload.originalName, mimetype: upload.mimeType });
-        if (!definition || !hasValidSignature(req.body, definition)) {
-            await abortMultipartMediaUpload({ key: upload.storageKey, uploadId: upload.uploadId }).catch(() => {});
-            await MediaUpload.deleteOne({ _id: upload._id });
-            throw fail("The file contents do not match a supported file type", 415);
-        }
-    }
-
-    const etag = await uploadMediaPart({
+const presignMultipartPart = async (req, res) => {
+    const { upload, partNumber } = await getUploadPart(req);
+    const url = await createPresignedMediaPartUrl({
         key: upload.storageKey,
         uploadId: upload.uploadId,
-        partNumber,
-        body: req.body
+        partNumber
     });
+    res.json({ url });
+};
+
+const confirmMultipartPart = async (req, res) => {
+    const { upload, partNumber } = await getUploadPart(req);
+    const etag = String(req.body?.etag || "").trim();
+    if (!etag || etag.length > 200 || /[\r\n]/.test(etag)) {
+        throw fail("The storage service did not return a valid part tag");
+    }
+
     await MediaUpload.updateOne(
         { _id: upload._id },
         { $pull: { parts: { partNumber } } }
@@ -327,7 +325,8 @@ const cancelMultipartUpload = async (req, res) => {
 
 module.exports = {
     initiateMultipartUpload,
-    uploadMultipartPart,
+    presignMultipartPart,
+    confirmMultipartPart,
     finishMultipartUpload,
     cancelMultipartUpload
 };
